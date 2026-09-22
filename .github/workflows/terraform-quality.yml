@@ -1,0 +1,34 @@
+name: Terraform module quality
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.0.0
+
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: 1.7.5
+          terraform_wrapper: false
+
+      - name: Format, validate, and mock-test every module
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform fmt -check -recursive -no-color
+          while IFS= read -r directory; do
+            terraform -chdir="$directory" init -backend=false -input=false -lockfile=readonly -no-color
+            terraform -chdir="$directory" validate -no-color
+            if [[ -d "$directory/tests" ]] && compgen -G "$directory/tests/*.tftest.hcl" >/dev/null; then
+              terraform -chdir="$directory" test -no-color
+            fi
+          done < <(find . -path './.terraform' -prune -o -name versions.tf -print | xargs -n1 dirname | sort)
