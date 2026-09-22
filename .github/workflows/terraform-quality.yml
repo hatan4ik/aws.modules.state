@@ -27,7 +27,12 @@ jobs:
           terraform fmt -check -recursive -no-color
           while IFS= read -r directory; do
             terraform -chdir="$directory" init -backend=false -input=false -lockfile=readonly -no-color
-            terraform -chdir="$directory" validate -no-color
+            # A reusable module that declares configuration_aliases is tested
+            # with its explicit provider alias supplied by the test file. A
+            # standalone validate cannot provide that alias.
+            if ! grep -q 'configuration_aliases' "$directory/versions.tf"; then
+              terraform -chdir="$directory" validate -no-color
+            fi
             if [[ -d "$directory/tests" ]] && compgen -G "$directory/tests/*.tftest.hcl" >/dev/null; then
               terraform -chdir="$directory" test -no-color
             fi
