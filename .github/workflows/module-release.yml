@@ -1,0 +1,85 @@
+name: module-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing signed semantic-version tag to verify and publish.
+        required: true
+        type: string
+
+permissions:
+  # The release job creates the immutable GitHub release after it has validated
+  # the caller-supplied, GitHub-verified annotated tag.
+  contents: write
+
+# This job mirrors hatan4ik/terraform-pipelines/.github/workflows/module-release.yml
+# at 8fc2a04c7931dd449097bb92b15b085278e3f67a (v0.1.1) step for step, at the same
+# pinned action commits, with one deliberate difference: the shared workflow runs
+# `terraform validate` in the module directory, which fails for a root that
+# declares configuration_aliases = [aws.replica] ("Provider configuration not
+# present"). Here the root is validated through examples/minimal, which calls it
+# with real provider wiring. The tag verification is unchanged. Return to the
+# shared workflow once terraform-pipelines skips validate for alias modules.
+jobs:
+  release:
+    name: verify-and-publish-release
+    runs-on: ubuntu-24.04
+    environment: module-release
+    steps:
+      - name: Check out tag and full tag history
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.0.0
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.release_tag }}
+
+      - name: Enforce semantic version and GitHub-verified annotated tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag='${{ inputs.release_tag }}'
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "tag is not a semantic version: $tag" >&2; exit 64; }
+          tag_object_type="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq '.object.type')"
+          tag_object_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq '.object.sha')"
+          [[ "$tag_object_type" == "tag" ]] || { echo "tag must be annotated; lightweight tags are not accepted" >&2; exit 65; }
+          tag_target_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object_sha" --jq '.object.sha')"
+          tag_verified="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object_sha" --jq '.verification.verified')"
+          [[ "$tag_verified" == "true" ]] || { echo "tag signature is not GitHub-verified" >&2; exit 66; }
+          [[ "$tag_target_sha" == "$GITHUB_SHA" ]] || { echo "tag does not point at the checked-out revision" >&2; exit 67; }
+          git tag --points-at "$GITHUB_SHA" | grep -Fxq -- "$tag" || { echo "tag does not point at the checked-out revision" >&2; exit 65; }
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: 1.7.5
+          terraform_wrapper: false
+
+      - name: Verify module formatting, configuration, and tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform fmt -check -recursive -no-color
+          terraform init -backend=false -input=false -lockfile=readonly -no-color
+          # The root cannot be validated standalone (configuration_aliases);
+          # the minimal example calls it with real provider wiring.
+          terraform -chdir=examples/minimal init -backend=false -input=false -no-color
+          terraform -chdir=examples/minimal validate -no-color
+          terraform test -no-color
+          scripts/check-destroy-guards.sh
+
+      - name: Verify generated module documentation
+        uses: terraform-docs/gh-actions@6de6da0cefcc6b4b7a5cbea4d79d97060733093c # v1.4.1
+        with:
+          working-dir: .
+          output-file: README.md
+          output-method: inject
+          fail-on-diff: "true"
+          git-push: "false"
+
+      - name: Publish GitHub release for the protected tag
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.3.3
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          generate_release_notes: true

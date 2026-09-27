@@ -1,4 +1,4 @@
-name: Terraform module quality
+name: terraform-quality
 
 on:
   pull_request:
@@ -9,31 +9,97 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  validate:
+  # The root module declares configuration_aliases = [aws.replica]. A root module
+  # cannot configure the provider it expects a caller to pass, so the shared
+  # workflow's unconditional `terraform validate` fails here with "Provider
+  # configuration not present" (the reason commit 940cd58 skipped validate for
+  # alias modules). This job therefore mirrors the shared workflow's steps at the
+  # same pinned action commits, minus the standalone validate, plus the checks
+  # specific to this module. Every example calls the root through real provider
+  # wiring, so validating the examples below validates the whole root.
+  # Return to the shared workflow once terraform-pipelines skips validate for
+  # modules that declare configuration_aliases.
+  root:
+    name: quality (.)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.0.0
+      - name: Check out revision
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.0.0
 
-      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
           terraform_version: 1.7.5
           terraform_wrapper: false
 
-      - name: Format, validate, and mock-test every module
-        shell: bash
+      - name: Check canonical formatting
+        run: terraform fmt -check -recursive -no-color
+
+      - name: Initialize without a remote backend
+        run: terraform init -backend=false -input=false -lockfile=readonly -no-color
+
+      - name: Set up TFLint
+        uses: terraform-linters/setup-tflint@ae78205cfffec9e8d93fd2b3115c7e9d3166d4b6 # v5.0.0
+
+      - name: Lint Terraform
         run: |
-          set -euo pipefail
-          terraform fmt -check -recursive -no-color
-          while IFS= read -r directory; do
-            terraform -chdir="$directory" init -backend=false -input=false -lockfile=readonly -no-color
-            # A reusable module that declares configuration_aliases is tested
-            # with its explicit provider alias supplied by the test file. A
-            # standalone validate cannot provide that alias.
-            if ! grep -q 'configuration_aliases' "$directory/versions.tf"; then
-              terraform -chdir="$directory" validate -no-color
-            fi
-            if [[ -d "$directory/tests" ]] && compgen -G "$directory/tests/*.tftest.hcl" >/dev/null; then
-              terraform -chdir="$directory" test -no-color
-            fi
-          done < <(find . -path './.terraform' -prune -o -name versions.tf -print | xargs -n1 dirname | sort)
+          tflint --init
+          tflint
+
+      - name: Run credential-free Terraform tests
+        run: terraform test -no-color
+
+      - name: Check the destroy guards
+        run: scripts/check-destroy-guards.sh
+
+      - name: Run the wiring suite against a guard-lifted copy
+        run: scripts/test-wired.sh
+
+      - name: Run Checkov policy checks
+        uses: bridgecrewio/checkov-action@444c9db6fa75e2d9c19ebf1fde7322089be9009e # pinned upstream commit
+        with:
+          directory: .
+          framework: terraform
+          quiet: true
+          soft_fail: false
+          download_external_modules: false
+
+      - name: Run Trivy IaC checks
+        uses: aquasecurity/trivy-action@d2a0b60797ff03db6132bd4e2b293f9b37081297 # pinned upstream commit
+        with:
+          scan-type: config
+          scan-ref: .
+          hide-progress: true
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+
+      - name: Check generated module documentation
+        uses: terraform-docs/gh-actions@6de6da0cefcc6b4b7a5cbea4d79d97060733093c # v1.4.1
+        with:
+          working-dir: .
+          output-file: README.md
+          output-method: inject
+          fail-on-diff: "true"
+          git-push: "false"
+
+  quality:
+    strategy:
+      fail-fast: false
+      matrix:
+        directory:
+          - modules/policies
+          - modules/legacy-adoption
+          - examples/minimal
+          - examples/replicated-tier
+          - examples/object-lock-tier
+          - examples/multiple-tiers
+          - examples/legacy-adoption
+    uses: hatan4ik/terraform-pipelines/.github/workflows/terraform-quality.yml@838da070a7e33ed2911ad3768ba3d00cccc9a5d9 # v0.1.0
+    with:
+      working_directory: ${{ matrix.directory }}
+      check_docs: true
