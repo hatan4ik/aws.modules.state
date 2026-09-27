@@ -44,7 +44,7 @@ jobs:
         run: terraform init -backend=false -input=false -lockfile=readonly -no-color
 
       - name: Set up TFLint
-        uses: terraform-linters/setup-tflint@ae78205cfffec9e8d93fd2b3115c7e9d3166d4b6 # v5.0.0
+        uses: terraform-linters/setup-tflint@1cf010d3c7aef302051ccdb68c14c5dc2efa34ef # v6.3.1
 
       - name: Lint Terraform
         run: |
