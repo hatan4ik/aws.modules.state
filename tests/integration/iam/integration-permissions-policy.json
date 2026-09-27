@@ -1,0 +1,73 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DisposableBuckets",
+      "Effect": "Allow",
+      "Action": [
+        "s3:CreateBucket", "s3:DeleteBucket", "s3:ListBucket", "s3:ListBucketVersions", "s3:GetBucketLocation",
+        "s3:GetBucketAcl", "s3:GetBucketCORS", "s3:GetBucketRequestPayment", "s3:GetBucketWebsite", "s3:GetAccelerateConfiguration",
+        "s3:GetBucketTagging", "s3:PutBucketTagging",
+        "s3:GetBucketVersioning", "s3:PutBucketVersioning",
+        "s3:GetBucketObjectLockConfiguration", "s3:PutBucketObjectLockConfiguration",
+        "s3:GetBucketOwnershipControls", "s3:PutBucketOwnershipControls",
+        "s3:GetBucketPublicAccessBlock", "s3:PutBucketPublicAccessBlock",
+        "s3:GetBucketPolicy", "s3:PutBucketPolicy", "s3:DeleteBucketPolicy", "s3:GetBucketPolicyStatus",
+        "s3:GetEncryptionConfiguration", "s3:PutEncryptionConfiguration",
+        "s3:GetLifecycleConfiguration", "s3:PutLifecycleConfiguration",
+        "s3:GetBucketLogging", "s3:PutBucketLogging",
+        "s3:GetBucketNotification", "s3:PutBucketNotification",
+        "s3:GetReplicationConfiguration",
+        "s3:DeleteObject", "s3:DeleteObjectVersion"
+      ],
+      "Resource": [
+        "arn:aws:s3:::state-it-*",
+        "arn:aws:s3:::state-it-*/*"
+      ]
+    },
+    {
+      "Sid": "DisposableLockTables",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:CreateTable", "dynamodb:DeleteTable", "dynamodb:DescribeTable", "dynamodb:UpdateTable",
+        "dynamodb:DescribeContinuousBackups", "dynamodb:UpdateContinuousBackups",
+        "dynamodb:DescribeTimeToLive", "dynamodb:DescribeKinesisStreamingDestination",
+        "dynamodb:ListTagsOfResource", "dynamodb:TagResource", "dynamodb:UntagResource"
+      ],
+      "Resource": "arn:aws:dynamodb:*:<ACCOUNT_ID>:table/state-it-*"
+    },
+    {
+      "Sid": "KeyCreation",
+      "Effect": "Allow",
+      "Action": "kms:CreateKey",
+      "Resource": "*"
+    },
+    {
+      "Sid": "DisposableKeyAliases",
+      "Effect": "Allow",
+      "Action": ["kms:CreateAlias", "kms:DeleteAlias", "kms:UpdateAlias"],
+      "Resource": "arn:aws:kms:*:<ACCOUNT_ID>:alias/state-it-*"
+    },
+    {
+      "Sid": "KeysAreGovernedByTheirOwnKeyPolicy",
+      "Effect": "Allow",
+      "Action": ["kms:ListAliases", "kms:ListKeys"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "DisposableRole",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole", "iam:DeleteRole", "iam:GetRole", "iam:TagRole", "iam:UntagRole", "iam:UpdateAssumeRolePolicy",
+        "iam:ListRolePolicies", "iam:ListAttachedRolePolicies", "iam:ListInstanceProfilesForRole"
+      ],
+      "Resource": "arn:aws:iam::<ACCOUNT_ID>:role/state-it-*"
+    },
+    {
+      "Sid": "ResolveTheRoleTheSuiteRunsAs",
+      "Effect": "Allow",
+      "Action": "iam:GetRole",
+      "Resource": "arn:aws:iam::<ACCOUNT_ID>:role/<INTEGRATION_ROLE_NAME>"
+    }
+  ]
+}
