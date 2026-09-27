@@ -63,7 +63,7 @@ backend. Retiring it is a v2 candidate that needs an ADR 0015 amendment (see
 | The replication role name is `<prefix>-<tier>-terraform-state-replication`. | IAM limits role names to 64 characters; a 31-character prefix and tier overflow it and fail at apply. | A precondition on `aws_iam_role.state_replication` names the tier and the limit at plan time. |
 | `access_log_bucket_name` could name one of the state buckets. | A state bucket logging into itself, or a replica logging into the primary, creates a log-of-log feedback loop on the most sensitive buckets. | A precondition on `aws_s3_bucket_logging.state` rejects it. |
 | Silent behaviours: Object Lock retention fields ignored when Object Lock is off; module-owned tags overwriting the caller's; administrators who are also routine state users; noncurrent-version expiry shorter than the Object Lock retention. | Each is valid but usually unintended. | Four advisory `check` blocks (`checks.tf`), each with a test. |
-| Tests: three `plan` runs. | No variant, validation or policy assertion. | Five root test files (posture, replication, policies of non-replicated tiers, validation, checks), a submodule suite, a legacy-adoption suite, and a guard-lifted mock-apply suite that proves the root wires the right document to the right resource for every variant. |
+| Tests: three `plan` runs. | No variant, validation or policy assertion. | Seven root test files (posture, replication, documents, outputs, preconditions, validation, checks), a policies suite with a byte-for-byte v0.1.0 golden, a legacy-adoption suite, and a guard-lifted mock-apply suite that proves the root wires the right document to the right resource for every variant. |
 | No examples, no upgrade guide, no design record. | Behaviour was unpinned and undocumented. | Five examples validated in CI, `docs/UPGRADE-1.0.md`, this document. |
 | The legacy submodule committed its `.terraform.lock.hcl`, and its README linked into a monorepo path that does not exist here. | CI's lock expectations (root only) and dead links. | The file is untracked (gitignored); links point at the ADRs on GitHub and state that ADR 0015 is closed. |
 | CI: an inline workflow that formatted, validated (skipping alias modules) and tested. | No tflint, Checkov, Trivy or docs-drift check; no per-submodule and per-example matrix. | The standard quality matrix through the shared pipeline for every directory the shared workflow can validate, plus an inline job for the root (see [CI and the provider alias](#ci-and-the-provider-alias)). |
@@ -199,8 +199,10 @@ validates the whole root) and runs the root itself in an inline job that mirrors
 the shared workflow's steps at the same pinned action commits, minus the
 standalone validate, plus the guard checks and the wired tests. The release
 workflow is inline for the same reason and differs from
-`terraform-pipelines/.github/workflows/module-release.yml@8fc2a04` only in that
-step. Both should return to the shared pipeline once it skips validate for alias
+`terraform-pipelines/.github/workflows/module-release.yml@8fc2a04` only in its
+verification step: it validates through `examples/minimal` instead of the root,
+keeps the lock file read-only, and runs the destroy-guard check. The tag
+verification and the publish step are the shared workflow's, unchanged. Both should return to the shared pipeline once it skips validate for alias
 modules; that change belongs in `terraform-pipelines` and is outside this
 repository. Replacing the alias (see Deferred) removes the need altogether.
 
