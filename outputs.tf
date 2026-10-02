@@ -6,9 +6,9 @@ output "backend_configuration" {
       kms_key_id     = aws_kms_key.state[tier].arn
       dynamodb_table = aws_dynamodb_table.state_lock[tier].name
       use_lockfile   = true
-      replica_bucket = try(aws_s3_bucket.state_replica[tier].id, null)
+      replica_bucket = contains(keys(local.replication_tiers), tier) ? aws_s3_bucket.state_replica[tier].id : null
       replica_region = contains(keys(local.replication_tiers), tier) ? var.replica_region : null
-      replica_key_id = try(aws_kms_replica_key.state[tier].arn, null)
+      replica_key_id = contains(keys(local.replication_tiers), tier) ? aws_kms_replica_key.state[tier].arn : null
     }
   }
 }
@@ -20,8 +20,8 @@ output "state_access_policy_arns" {
       bucket_arn         = aws_s3_bucket.state[tier].arn
       key_arn            = aws_kms_key.state[tier].arn
       lock_arn           = aws_dynamodb_table.state_lock[tier].arn
-      replica_bucket_arn = try(aws_s3_bucket.state_replica[tier].arn, null)
-      replica_key_arn    = try(aws_kms_replica_key.state[tier].arn, null)
+      replica_bucket_arn = contains(keys(local.replication_tiers), tier) ? aws_s3_bucket.state_replica[tier].arn : null
+      replica_key_arn    = contains(keys(local.replication_tiers), tier) ? aws_kms_replica_key.state[tier].arn : null
     }
   }
 }
