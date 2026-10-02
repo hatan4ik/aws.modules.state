@@ -5,7 +5,7 @@
 resource "aws_iam_role" "state_replication" {
   for_each = local.replication_tiers
 
-  name = "${var.name_prefix}-${each.key}-terraform-state-replication"
+  name = local.replication_role_names[each.key]
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -19,14 +19,14 @@ resource "aws_iam_role" "state_replication" {
   })
 
   tags = merge(local.common_tags, {
-    Name            = "${var.name_prefix}-${each.key}-terraform-state-replication"
+    Name            = local.replication_role_names[each.key]
     EnvironmentTier = each.key
   })
 
   lifecycle {
     precondition {
-      condition     = length("${var.name_prefix}-${each.key}-terraform-state-replication") <= 64
-      error_message = "The replication role name ${var.name_prefix}-${each.key}-terraform-state-replication is longer than the 64 characters IAM allows. Shorten name_prefix or the tier name."
+      condition     = length(local.replication_role_names[each.key]) <= 64
+      error_message = "The replication role name ${local.replication_role_names[each.key]} is longer than the 64 characters IAM allows. Shorten name_prefix or the tier name."
     }
   }
 }
@@ -34,7 +34,7 @@ resource "aws_iam_role" "state_replication" {
 resource "aws_iam_role_policy" "state_replication" {
   for_each = local.replication_tiers
 
-  name   = "${var.name_prefix}-${each.key}-terraform-state-replication"
+  name   = local.replication_role_names[each.key]
   role   = aws_iam_role.state_replication[each.key].id
   policy = module.policies.replication_policies[each.key]
 }
