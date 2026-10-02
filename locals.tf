@@ -13,6 +13,18 @@ locals {
     for tier in keys(var.state_tiers) : tier => "${var.name_prefix}-${tier}-terraform-locks"
   }
 
+  # The base name of a tier's state KMS key: its Name tag, the stem of the
+  # replica key's Name tag, and (behind "alias/") the alias in both Regions.
+  state_key_names = {
+    for tier in keys(var.state_tiers) : tier => "${var.name_prefix}-${tier}-terraform-state"
+  }
+
+  # A replicated tier's replication role name, used for the role, its Name tag,
+  # its inline policy and the 64-character precondition that guards it.
+  replication_role_names = {
+    for tier in keys(local.replication_tiers) : tier => "${var.name_prefix}-${tier}-terraform-state-replication"
+  }
+
   # Every bucket this module creates, primary and replica, for the uniqueness and
   # access-log-target rules.
   state_bucket_names = concat(

@@ -13,7 +13,7 @@ resource "aws_kms_key" "state" {
   policy                  = module.policies.key_policies[each.key]
 
   tags = merge(local.common_tags, {
-    Name            = "${var.name_prefix}-${each.key}-terraform-state"
+    Name            = local.state_key_names[each.key]
     EnvironmentTier = each.key
   })
 
@@ -37,7 +37,7 @@ resource "aws_kms_replica_key" "state" {
   policy                  = module.policies.replica_key_policies[each.key]
 
   tags = merge(local.common_tags, {
-    Name            = "${var.name_prefix}-${each.key}-terraform-state-replica"
+    Name            = "${local.state_key_names[each.key]}-replica"
     EnvironmentTier = each.key
     ReplicaRegion   = var.replica_region
   })
@@ -55,7 +55,7 @@ resource "aws_kms_replica_key" "state" {
 resource "aws_kms_alias" "state" {
   for_each = var.state_tiers
 
-  name          = "alias/${var.name_prefix}-${each.key}-terraform-state"
+  name          = "alias/${local.state_key_names[each.key]}"
   target_key_id = aws_kms_key.state[each.key].key_id
 }
 
@@ -63,6 +63,6 @@ resource "aws_kms_alias" "state_replica" {
   provider = aws.replica
   for_each = local.replication_tiers
 
-  name          = "alias/${var.name_prefix}-${each.key}-terraform-state"
+  name          = "alias/${local.state_key_names[each.key]}"
   target_key_id = aws_kms_replica_key.state[each.key].key_id
 }

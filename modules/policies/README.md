@@ -2,13 +2,13 @@
 
 Renders every policy document of the state backend from ARN strings: the primary and replica KMS key policies, the primary and replica bucket policies, and the replication role's inline policy, each keyed by tier. It creates no resources and declares no provider, so the security-critical documents have a single owner and are asserted with `terraform test` alone, with known ARNs. The root module calls it once for all tiers and attaches each document to its resource.
 
-The documents are byte-identical to the ones v0.1.0 built as root locals; `tests/policies.tftest.hcl` compares them byte for byte. A change to any statement is a change to the live policy of a backend that protects state and needs its own review.
+The documents are byte-identical to the ones v0.1.0 built as root locals, with one reviewed exception: since 1.0.1 a replicated tier's primary key policy also carries a `KeyReplication` statement (`kms:ReplicateKey` for `key_administrator_arns`), without which `aws_kms_replica_key` cannot be created. `tests/policies.tftest.hcl` compares every document byte for byte. A change to any statement is a change to the live policy of a backend that protects state and needs its own review.
 
 ## What it renders
 
 | Output | Document | Principals and scope |
 | --- | --- | --- |
-| `key_policies` | Primary KMS key policy per tier | `KeyAdministration` for `key_administrator_arns`; `StateEncryptionUse` for the CI and break-glass roles and, on a replicated tier, that tier's replication role. No account-root statement. |
+| `key_policies` | Primary KMS key policy per tier | `KeyAdministration` for `key_administrator_arns`; `StateEncryptionUse` for the CI and break-glass roles and, on a replicated tier, that tier's replication role; on a replicated tier only, `KeyReplication` (`kms:ReplicateKey`) for `key_administrator_arns`. No account-root statement. |
 | `replica_key_policies` | KMS replica key policy per replicated tier | The same administrators and principals as the tier's primary key. |
 | `bucket_policies` | Primary bucket policy per tier | `DenyInsecureTransport`; `DenyPrincipalsOutsideStateRoles` (`Deny s3:*` unless the caller is a state role or the tier's replication role); allows for the CI and break-glass roles only. |
 | `replica_bucket_policies` | Replica bucket policy per replicated tier | The same shape for the replica bucket. |

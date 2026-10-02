@@ -94,7 +94,7 @@ backend. Retiring it is a v2 candidate that needs an ADR 0015 amendment (see
 root (one call = all tiers)
 ├── versions.tf         terraform >= 1.7.0, aws >= 6.35.0 with configuration_aliases = [aws.replica]
 ├── variables.tf        typed inputs, validations
-├── locals.tf           replication_tiers, common_tags, lock-table names
+├── locals.tf           replication_tiers, common_tags, lock-table, KMS key/alias and replication-role names
 ├── regions.tf          data.aws_region.primary, data.aws_region.replica (provider-region binding)
 ├── kms.tf              aws_kms_key.state, aws_kms_replica_key.state, aliases
 ├── buckets.tf          aws_s3_bucket.state and its nine configuration resources, policy, logging, notification
@@ -148,7 +148,10 @@ Asserted per tier variant (replica on and off, Object Lock on and off):
   role never appears in this tier's documents.
 - KMS: multi-Region primary, rotation on, deletion window as declared, an
   administration statement for `key_administrator_arns` and a use statement for
-  the CI, break-glass and (when replicated) the tier's replication role. There is
+  the CI, break-glass and (when replicated) the tier's replication role. On a
+  replicated tier only, the primary key policy also has a `KeyReplication`
+  statement granting `kms:ReplicateKey` to `key_administrator_arns` (added in
+  1.0.1; see [KMS key replication](#kms-key-replication)). There is
   deliberately no account-root statement: only the named roles can use or manage
   a state key.
 - Replication role: assumable only by `s3.amazonaws.com`; its policy reads only
@@ -157,6 +160,54 @@ Asserted per tier variant (replica on and off, Object Lock on and off):
 - Lock table: on-demand, `LockID` hash key, SSE with the tier's key, point-in-time
   recovery on.
 - Every stateful resource keeps `prevent_destroy`.
+
+### KMS key replication
+
+`aws_kms_replica_key` calls `kms:ReplicateKey` on the primary key. AWS evaluates
+that permission against the **primary key's key policy**; because the key
+policy deliberately has no account-root statement, an IAM policy cannot grant
+it, and none of the `KeyAdministration` wildcards (`kms:Create*`, `kms:Put*`,
+`kms:Update*` and the rest) matches it. v0.1.0 and v1.0.0 therefore rendered a
+primary key policy under which a replicated tier could not be applied. 1.0.1
+adds one statement to a replicated tier's primary key policy only:
+
+```json
+{ "Sid": "KeyReplication", "Effect": "Allow", "Action": ["kms:ReplicateKey"],
+  "Resource": "*", "Principal": { "AWS": ["<key_administrator_arns>"] } }
+```
+
+- **Principal.** `key_administrator_arns`, because the identity that applies this
+  module must already be a key administrator (the KMS lockout check on
+  `CreateKey`/`PutKeyPolicy` requires it, and `tests/integration/README.md`
+  names it in that list). The `aws.replica` provider must run as the same, or
+  another, key administrator. The state roles and the replication role do not
+  receive it: S3 replication never calls `ReplicateKey`.
+- **Scope.** Only the primary key of a tier that replicates. A non-replicated
+  tier's key policy and every replica key policy are byte-identical to v0.1.0.
+  The statement is appended after `StateEncryptionUse`, so statement indices
+  that callers or tests read are unchanged.
+- **Other permissions the applier needs**, all already covered: `kms:CreateKey`
+  in the replica Region is an IAM permission (the replica key does not exist
+  yet); `kms:PutKeyPolicy`, `kms:TagResource` and `kms:DescribeKey` on the
+  replica come from the `KeyAdministration` statement of the replica key's own
+  policy, which `ReplicateKey` sets at creation.
+- **Verification status.** The rendered document is asserted in
+  `modules/policies/tests` and its wiring in `tests/wired`. A real-AWS apply of
+  a replicated tier has not been run: `tests/integration` covers a
+  non-replicated tier only.
+
+### Replication failover and failback
+
+Replication is one-way (primary to replica), asynchronous and without reverse
+replication; the lock table exists in the primary Region only. The replica
+bucket and key policies therefore give the CI and break-glass roles the same
+read **and write** access as the primary ("StateRecovery"): during a
+primary-Region outage they run workload roots against the replica with
+`use_lockfile` only, and on recovery the state written in the replica is copied
+back by hand and the stale lock-table digest cleared. The step-by-step procedure
+is in the README, [Replication failover and failback](../README.md#replication-failover-and-failback).
+Automating any part of it (reverse replication, a replicated lock table) would
+add resources and is not in scope for v1.
 
 ## Testing strategy
 
@@ -196,8 +247,15 @@ module directory unconditionally, so it cannot go green on this root.
 v1 keeps the standard matrix for `modules/*` and `examples/*` (every example
 calls the root through real provider wiring, so `terraform validate` there
 validates the whole root) and runs the root itself in an inline job that mirrors
-the shared workflow's steps at the same pinned action commits, minus the
-standalone validate, plus the guard checks and the wired tests. The release
+the shared workflow's steps, minus the standalone validate, plus the guard
+checks and the wired tests. The inline job's action commits are pinned
+**independently** of the shared workflow and kept in sync periodically, not
+byte for byte: Dependabot bumps them in this repository (for example
+`actions/checkout` v7.0.1, `hashicorp/setup-terraform` v4.0.1 and
+`terraform-linters/setup-tflint` v6.3.1 here, against v5.0.0, v3.1.2 and v5.0.0
+in `terraform-pipelines` v0.1.1), so the two can differ between syncs. The
+Checkov, Trivy and terraform-docs actions are pinned to the same commits on
+both sides. The release
 workflow is inline for the same reason and differs from
 `terraform-pipelines/.github/workflows/module-release.yml@8fc2a04` only in its
 verification step: it validates through `examples/minimal` instead of the root,
@@ -231,3 +289,5 @@ or resource argument, so it is out of scope for an interface-preserving v1.
 | Bring-your-own replica key, replication time control and metrics, replication role path and permissions boundary, per-tier key administrators. | New optional inputs; each needs a decision on its default and on Object Lock and KMS interaction. |
 | An account-root statement in the KMS key policy, or an explicit orphaned-key recovery role. | Deliberately absent today (only named roles can manage a state key); revisiting it is a security decision, not a refactor. |
 | Derive bucket ARNs from name and partition instead of the resource attribute. | Only useful to make more policy content known at plan time; the guard-lifted wired suite already covers the composition. |
+| Extract the primary and replica bucket sets (`buckets.tf`, `replica_buckets.tf`) into one bucket submodule called twice. | The two files are near-identical blocks of about ten resources that change for the same reason and have two concrete uses, so they are a legitimate extraction candidate under the DRY rule. Extraction would move every bucket resource to a new address under a module call; these buckets carry `prevent_destroy`, v1 promised unchanged resource addresses, and `tests/posture.tftest.hcl` asserts both copies independently. Compatibility outranks DRY here: a deliberate v1 decision, not an oversight. Doing it needs `moved` blocks for every resource and a major version. |
+| Make `object_lock` a null-or-config variant (`object_lock = null` for off, `{ retention_mode, retention_days }` for on) instead of `{ enabled, retention_mode?, retention_days? }`. | The variant would make an "enabled without retention" or "retention without enabled" combination unrepresentable. v1 keeps the v0.1.0 shape because changing it breaks every caller's `state_tiers`; the validations and the `object_lock_settings_are_used` check cover the invalid combinations instead. A deliberate v1 decision, judged correct for v1. |

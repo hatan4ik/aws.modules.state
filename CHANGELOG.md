@@ -4,6 +4,21 @@ All notable changes to this module are documented here. The format follows [Keep
 
 ## [Unreleased]
 
+### Fixed
+
+- **Policy change, needs Security review.** A replicated tier's primary KMS key policy now carries a `KeyReplication` statement that allows `kms:ReplicateKey` to `key_administrator_arns`. AWS requires that permission in the primary key's own key policy before `aws_kms_replica_key` can be created, and with no account-root statement an IAM policy cannot grant it, so a replicated tier could not be applied. A non-replicated tier's key policy, the replica key policy and every other document are unchanged; the policies golden test records the one reviewed deviation from v0.1.0. Real-AWS apply of a replicated tier has not yet been run.
+
+### Changed
+
+- The KMS key/alias base name and the replication role name are computed once in `locals.tf` (`state_key_names`, `replication_role_names`) instead of being written out at every use. Rendered names, tags and resource addresses are unchanged.
+- The replica fields of `backend_configuration` and `state_access_policy_arns` use an explicit replication-tier conditional instead of `try(..., null)`, so a mistyped attribute fails at plan instead of silently becoming `null`. Output values are unchanged.
+- The root CI job no longer claims to use the shared workflow's action commits; its pins are maintained independently by Dependabot and re-aligned periodically. The `actions/checkout` version comment now names the pinned release (v7.0.1).
+
+### Added
+
+- README: a replication failover and failback procedure (what the replica's StateRecovery access is for, operating on the replica with `use_lockfile` only, copying state back and clearing the lock-table digest).
+- `docs/DESIGN.md`: the KMS key replication rationale, and two deferred-to-v2 decisions (primary/replica bucket extraction; a null-or-config `object_lock`).
+
 ## [1.0.0] - 2026-09-27
 
 A hardening-and-standards uplift that preserves the ADR-accepted design. Inputs, outputs, resource addresses and every rendered resource argument and policy document are unchanged; upgrade by changing the `ref` (see [docs/UPGRADE-1.0.md](docs/UPGRADE-1.0.md)).
