@@ -59,19 +59,38 @@ locals {
     "kms:ReEncrypt*",
   ]
 
+  # kms:ReplicateKey must be allowed by the primary key's own key policy before
+  # aws_kms_replica_key can be created, and with no account-root statement an
+  # IAM policy cannot grant it. None of the KeyAdministration wildcards match it.
+  # It goes to the key administrators only (the identity that applies this
+  # module, through both the default and the aws.replica provider, is one of
+  # them; see tests/integration/README.md), and only on the primary key of a
+  # tier that replicates, so a non-replicated tier's policy is unchanged. It is
+  # appended after StateEncryptionUse so existing statement indices stay put.
+  key_replication_statement = {
+    Sid       = "KeyReplication"
+    Effect    = "Allow"
+    Action    = ["kms:ReplicateKey"]
+    Resource  = "*"
+    Principal = { AWS = tolist(var.key_administrator_arns) }
+  }
+
   key_policies = {
     for tier in var.tiers : tier => jsonencode({
       Version = "2012-10-17"
-      Statement = [
-        local.key_administration_statement,
-        {
-          Sid       = "StateEncryptionUse"
-          Action    = local.key_use_actions
-          Effect    = "Allow"
-          Resource  = "*"
-          Principal = { AWS = try(local.principals[tier], null) }
-        },
-      ]
+      Statement = concat(
+        [
+          local.key_administration_statement,
+          {
+            Sid       = "StateEncryptionUse"
+            Action    = local.key_use_actions
+            Effect    = "Allow"
+            Resource  = "*"
+            Principal = { AWS = try(local.principals[tier], null) }
+          },
+        ],
+        contains(keys(var.replication_role_arns), tier) ? [local.key_replication_statement] : [],
+      )
     })
   }
 

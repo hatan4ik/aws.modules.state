@@ -244,6 +244,22 @@ run "apply_the_three_tier_deployment" {
     error_message = "No key policy may name another tier's replication role."
   }
 
+  assert {
+    condition = (
+      length(jsondecode(aws_kms_key.state["dev"].policy).Statement) == 2 &&
+      !strcontains(aws_kms_key.state["dev"].policy, "kms:ReplicateKey") &&
+      alltrue([
+        for tier in ["staging", "prod"] : (
+          length(jsondecode(aws_kms_key.state[tier].policy).Statement) == 3 &&
+          jsondecode(aws_kms_key.state[tier].policy).Statement[2].Sid == "KeyReplication" &&
+          jsondecode(aws_kms_key.state[tier].policy).Statement[2].Action == ["kms:ReplicateKey"] &&
+          jsondecode(aws_kms_key.state[tier].policy).Statement[2].Principal.AWS == ["arn:aws:iam::111122223333:role/key-admin"]
+        )
+      ])
+    )
+    error_message = "Only a replicated tier's primary key may allow kms:ReplicateKey, and only to the key administrators, so aws_kms_replica_key can be created."
+  }
+
   # --- replica key policies -------------------------------------------------
   assert {
     condition = alltrue([
