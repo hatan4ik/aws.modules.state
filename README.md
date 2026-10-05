@@ -105,7 +105,7 @@ root (one call = all tiers)
     └── legacy-adoption/  ADR 0015 adoption composition (historical, do not use for a new backend)
 ```
 
-The root creates buckets, keys and roles and hands their ARNs to `modules/policies`, which returns five maps of policy documents keyed by tier; the root attaches each to its resource. The renderer has no resources, so the security-critical documents are tested with known ARNs. They are byte-identical to the documents v0.1.0 built inline.
+The root creates buckets, keys and roles and hands their ARNs to `modules/policies`, which returns five maps of policy documents keyed by tier; the root attaches each to its resource. The renderer has no resources, so the security-critical documents are tested with known ARNs. They are byte-identical to the documents v0.1.0 built inline, except that a replicated tier's primary key policy also carries the `KeyReplication` statement added in 1.0.1.
 
 ### Resources per tier
 
@@ -148,7 +148,7 @@ Other inputs: `name_prefix`, `primary_region`, `replica_region` (required even w
 
 - **Buckets.** Public access fully blocked, ownership enforced, versioning on, SSE-KMS with a Bucket Key under the tier's key (the replica bucket under the replica key). None is configurable.
 - **Bucket policy** (rendered by `modules/policies`): `DenyInsecureTransport` (`Deny s3:*` for every principal when `aws:SecureTransport` is false), `DenyPrincipalsOutsideStateRoles` (`Deny s3:*` unless `aws:PrincipalArn` is one of the CI and break-glass roles or the tier's own replication role), and two allows for the CI and break-glass roles only: bucket metadata and `s3:DeleteObject`, `s3:GetObject`, `s3:PutObject`. The replica bucket has the same shape.
-- **KMS.** A multi-Region key per tier with rotation on; a policy with a `KeyAdministration` statement for `key_administrator_arns` (no data-plane use) and a `StateEncryptionUse` statement for the CI, break-glass and the tier's replication role. There is deliberately no account-root statement. Consequence: only the named roles can manage the key, so keep the administrator role healthy; a deleted-and-recreated role does not recover access by itself.
+- **KMS.** A multi-Region key per tier with rotation on; a policy with a `KeyAdministration` statement for `key_administrator_arns` (no data-plane use) and a `StateEncryptionUse` statement for the CI, break-glass and the tier's replication role; on a replicated tier, a `KeyReplication` statement grants `kms:ReplicateKey` to `key_administrator_arns`, because AWS only honours that permission from the primary key's own policy when there is no account-root statement. The identity that applies the module, through both the default and the `aws.replica` provider, must therefore be a key administrator. There is deliberately no account-root statement. Consequence: only the named roles can manage the key, so keep the administrator role healthy; a deleted-and-recreated role does not recover access by itself.
 - **Replication role.** One per replicated tier, assumable only by `s3.amazonaws.com`. Its policy reads the tier's source bucket and object versions (including Object Lock metadata), writes only the tier's replica bucket, and uses only the tier's primary key to decrypt and replica key to encrypt. It never appears in another tier's documents.
 - **Lock table.** On-demand, SSE with the tier's key, point-in-time recovery.
 - **Provider binding.** Preconditions compare each provider's Region with `primary_region` and `replica_region`, so replicas cannot silently land in the wrong Region while the outputs name the declared one.
@@ -161,8 +161,64 @@ Other inputs: `name_prefix`, `primary_region`, `replica_region` (required even w
 - **Object Lock** can only be enabled when a bucket is created; changing `object_lock.enabled` for an existing tier forces replacement of the (protected) bucket, which the guard blocks. Decide it up front. Retention is also a floor for noncurrent expiry: lifecycle cannot remove a locked version, and a `check` warns when the retention outlives the expiry.
 - **KMS keys** are protected too; the deletion window applies only after an approved removal of the guard.
 - **The lock table** stays until ADR 0016 is amended with the retirement evidence; no removal path exists in this module.
+- **Failover and failback** are a manual, documented procedure; see [Replication failover and failback](#replication-failover-and-failback).
 - **Adding a replica to an existing tier** adds resources (replica bucket, key, role, replication configuration) and replicates new objects only; existing objects are not replicated retroactively by this module. S3 Batch Replication is out of scope.
 - **The `Component`, `Name`, `EnvironmentTier` and `ReplicaRegion` tags** are computed by the module and win over the same keys in `tags`; a check warns when a caller sets one.
+
+## Replication failover and failback
+
+This section is an operating procedure, not module behaviour: the module creates the replica and keeps it current, and nothing in it switches Regions automatically. Run it with the break-glass role unless your runbook names another state access principal.
+
+### What the replica is for
+
+- **Replication is one-way and asynchronous.** S3 replicates every new object version and delete marker from the primary bucket to the replica bucket, re-encrypted under the tier's KMS replica key. There is no replication time control, so the replica can lag the primary by seconds to (rarely) longer; there is **no reverse replication**, so nothing written to the replica ever reaches the primary on its own.
+- **The lock table is not replicated.** `aws_dynamodb_table.state_lock` exists in the primary Region only. During a primary-Region outage, `use_lockfile` (an S3 lock object next to the state) is the only lock mechanism available.
+- **The replica is writable on purpose.** The replica bucket policy's `AllowStateRecoveryBucketMetadata` and `AllowReplicatedStateRecoveryObjects` statements (in `modules/policies`) give the CI and break-glass roles the same bucket-metadata and `s3:GetObject`/`s3:PutObject`/`s3:DeleteObject` rights they have on the primary, and the replica key policy gives them the same key use. That "StateRecovery" access exists so that, during a primary-Region outage, those roles can (1) read the last replicated state and (2) keep operating against the replica as a temporary backend, including writing state and the `.tflock` lock object. Outside a declared failover, nothing should write to the replica; the replication role is the only routine writer.
+
+### Failover: primary Region unavailable
+
+1. **Declare it and freeze.** Stop every pipeline for the affected tier. Record the failover start time; failback depends on it.
+2. **Check what the replica holds.** For each state key you need, compare the latest replica version (`aws s3api list-object-versions --bucket <replica_bucket> --prefix <key>`) with what you expect. With no replication time control, the newest primary writes may not have arrived; if the replica copy's `serial` is behind the last known apply, treat those changes as lost and plan to reconcile them, do not hand-edit state.
+3. **Point the workload root at the replica.** Use the tier's replica outputs and lockfile locking only:
+
+   ```hcl
+   terraform {
+     backend "s3" {
+       bucket       = "<backend_configuration[tier].replica_bucket>"
+       region       = "<backend_configuration[tier].replica_region>"
+       kms_key_id   = "<backend_configuration[tier].replica_key_id>"
+       key          = "<the same key as in the primary>"
+       encrypt      = true
+       use_lockfile = true
+       # no dynamodb_table: the lock table lives in the primary Region
+     }
+   }
+   ```
+
+   Run `terraform init -reconfigure` (not `-migrate-state`: the state is already in the replica bucket, and migration would try to read the unavailable primary). Then `terraform plan` and confirm it reflects the infrastructure you expect before any apply.
+4. **Operate minimally.** Every apply now writes a state version that exists **only** in the replica Region. Keep a list of the state keys you wrote; failback needs it.
+5. **Do not** apply this module (its own bootstrap root targets the primary Region), promote the replica key with `kms:UpdatePrimaryRegion`, or change the replication configuration during the outage. Promoting the key would diverge from this module's state and is not needed: a multi-Region replica key encrypts and decrypts in its own Region on its own.
+
+### Failback: primary Region restored
+
+There is no reverse replication, so failback is a reviewed, manual copy of the state written during the outage.
+
+1. **Freeze again.** Stop every pipeline for the tier and make sure no `.tflock` object is held in the replica bucket.
+2. **Detect split brain.** List object versions in the **primary** bucket for each state key you wrote in step 4 above. If any primary version is newer than the failover start time, someone wrote to both copies: stop and reconcile by hand (compare `lineage` and `serial`, run plans against each), do not overwrite either copy.
+3. **Copy the replica's latest state back.** For each key written during the outage, copy the latest replica version over the primary key, in the primary Region, letting the primary bucket's default SSE-KMS encryption apply the tier's primary key:
+
+   ```sh
+   aws s3 cp "s3://<replica_bucket>/<key>" "s3://<primary_bucket>/<key>" \
+     --source-region <replica_region> --region <primary_region> \
+     --sse aws:kms --sse-kms-key-id <backend_configuration[tier].kms_key_id>
+   ```
+
+   Verify the copied object's `serial` and `lineage` match the replica's. The copy is itself replicated back to the replica as a new version with the same content, which is expected.
+4. **Clear the stale lock-table digest.** With `dynamodb_table` configured, the S3 backend stores an MD5 digest of each state object in the lock table under the item `LockID = "<primary_bucket>/<key>-md5"`. That digest still describes the pre-outage state, and `terraform init`/`plan` will refuse the newer object ("state data in S3 does not have the expected content"). Delete that item for every key you copied back (`aws dynamodb delete-item --table-name <dynamodb_table> --key '{"LockID":{"S":"<primary_bucket>/<key>-md5"}}'`); Terraform writes a fresh digest on the next state write.
+5. **Switch back.** Restore the primary `backend "s3"` block (bucket, `kms_key_id`, `dynamodb_table`, `use_lockfile`), run `terraform init -reconfigure` and then `terraform plan`, which must show no changes caused by the switch. Remove any leftover `.tflock` objects from the replica bucket.
+6. **Record it.** Note the failover window, the keys copied back and any changes lost to replication lag in the incident record.
+
+The procedure has not been exercised against real AWS for this module; rehearse it on a non-production replicated tier before relying on it.
 
 ## Testing
 
