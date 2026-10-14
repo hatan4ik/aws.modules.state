@@ -64,7 +64,7 @@ jobs:
         run: scripts/test-wired.sh
 
       - name: Run Checkov policy checks
-        uses: bridgecrewio/checkov-action@cc0e17d456ef1713bbfd963ebac19dc776775cb2 # pinned upstream commit
+        uses: bridgecrewio/checkov-action@d0dd2e9434b4428060edba72d050c135273bd677 # pinned upstream commit
         with:
           directory: .
           framework: terraform
